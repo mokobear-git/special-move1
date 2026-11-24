@@ -55,7 +55,7 @@ const KEYS = {
 };
 const BTNS = ['lp', 'mp', 'hp', 'lk', 'mk', 'hk', 'sp', 'sa'];
 const Input = {
-  held: {}, pressed: {}, padPrev: {},
+  held: {}, pressed: {}, padPrev: {}, touchHeld: {},
   init() {
     addEventListener('keydown', e => {
       const a = KEYS[e.code]; if (!a) return;
@@ -68,7 +68,7 @@ const Input = {
     addEventListener('pointerdown', () => Sound.init());
   },
   poll() {
-    const held = Object.assign({}, this.held), pressed = Object.assign({}, this.pressed);
+    const held = Object.assign({}, this.held, this.touchHeld), pressed = Object.assign({}, this.pressed);
     this.pressed = {};
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     for (const p of pads) {
@@ -92,6 +92,69 @@ const Input = {
     };
   }
 };
+// ============================================================
+//  タッチ操作（スマホ）＋画面レイアウト
+// ============================================================
+const Touch = {
+  on: false,
+  init() {
+    const root = document.getElementById('touch');
+    if (!root) return;
+    const coarse = window.matchMedia && matchMedia('(pointer: coarse)').matches;
+    if (coarse || 'ontouchstart' in window || navigator.maxTouchPoints > 0) this.enable();
+    addEventListener('touchstart', () => this.enable(), { passive: true });
+    root.querySelectorAll('.b[data-k]').forEach(el => {
+      const k = el.dataset.k;
+      const down = e => { e.preventDefault(); Sound.init(); try { el.setPointerCapture(e.pointerId); } catch (_) {} el.classList.add('on'); Input.touchHeld[k] = true; Input.pressed[k] = true; };
+      const up = () => { el.classList.remove('on'); Input.touchHeld[k] = false; };
+      el.addEventListener('pointerdown', down);
+      el.addEventListener('pointerup', up);
+      el.addEventListener('pointercancel', up);
+      el.addEventListener('lostpointercapture', up);
+      el.addEventListener('contextmenu', e => e.preventDefault());
+    });
+    const pad = document.getElementById('pad'), knob = document.getElementById('knob');
+    let pid = null;
+    const setDir = (l, r, u, d) => {
+      const nv = { left: l, right: r, up: u, down: d };
+      for (const k in nv) { if (nv[k] && !Input.touchHeld[k]) Input.pressed[k] = true; Input.touchHeld[k] = nv[k]; }
+    };
+    const move = e => {
+      const rc = pad.getBoundingClientRect(), cx = rc.left + rc.width / 2, cy = rc.top + rc.height / 2;
+      let dx = e.clientX - cx, dy = e.clientY - cy;
+      const rr = rc.width / 2, dist = Math.hypot(dx, dy);
+      const kx = dist > rr * 0.6 ? dx * rr * 0.6 / dist : dx, ky = dist > rr * 0.6 ? dy * rr * 0.6 / dist : dy;
+      knob.style.transform = `translate(${kx}px,${ky}px)`;
+      if (dist < rr * 0.22) { setDir(false, false, false, false); return; }
+      const a = Math.atan2(dy, dx) / D2R; // 0=右, 90=下
+      setDir(a > 112.5 || a < -112.5, a > -67.5 && a < 67.5, a < -22.5 && a > -157.5, a > 22.5 && a < 157.5);
+    };
+    pad.addEventListener('pointerdown', e => { e.preventDefault(); Sound.init(); pid = e.pointerId; try { pad.setPointerCapture(pid); } catch (_) {} move(e); });
+    pad.addEventListener('pointermove', e => { if (e.pointerId === pid) { e.preventDefault(); move(e); } });
+    const end = e => { if (e.pointerId !== pid) return; pid = null; knob.style.transform = ''; setDir(false, false, false, false); };
+    pad.addEventListener('pointerup', end); pad.addEventListener('pointercancel', end); pad.addEventListener('lostpointercapture', end);
+    cv.addEventListener('pointerdown', () => { try { cv.focus(); } catch (_) {} if (scene && scene instanceof TitleScene) Input.pressed.start = true; });
+  },
+  enable() {
+    if (this.on) return;
+    this.on = true;
+    const root = document.getElementById('touch'); if (root) root.hidden = false;
+    layout();
+  }
+};
+function layout() {
+  const app = document.getElementById('app');
+  if (!app) return;
+  const aw = app.clientWidth, ah = app.clientHeight;
+  const portrait = Touch.on && ah > aw * 1.1;
+  app.classList.toggle('portrait', portrait);
+  let cw = Math.min(aw, ah * 16 / 9);
+  if (portrait) cw = Math.min(aw, ah * 0.55 * 16 / 9);
+  cv.style.width = Math.floor(cw) + 'px'; cv.style.height = Math.floor(cw * 9 / 16) + 'px';
+}
+addEventListener('resize', layout);
+addEventListener('orientationchange', () => setTimeout(layout, 200));
+
 const BLANK = { left: false, right: false, up: false, down: false, held: {}, pressed: {} };
 
 // ============================================================
@@ -1631,6 +1694,7 @@ class HowToScene {
     text(c, '必殺技：方向キー1つ ＋ 必殺技ボタン（コマンド入力不要）', W / 2, y, 20, '#7fd8ff', 'center', 4);
     text(c, '→（またはニュートラル）＋SP／↓＋SP／←＋SP　の3種類。超必殺技は V。', W / 2, y + 28, 17, '#fff', 'center', 3);
     text(c, '弱→中→強の通常技は、ヒット/ガード時に強い技や必殺技へキャンセル可能（コンボ）。', W / 2, y + 56, 16, '#ddd', 'center', 3);
+    text(c, 'スマホ：左の十字パッドで移動、右のボタンで攻撃（SP＝必殺技、SA＝超必殺技）。', W / 2, y + 104, 15, '#ffe9a0', 'center', 3);
     text(c, 'ジャンプ攻撃は立ちガード、足払い等の下段はしゃがみガードでのみ防御可能。必殺技はガードしても削られる。', W / 2, y + 80, 15, '#ddd', 'center', 3);
     footer(c, 'Enter / X：戻る');
   }
@@ -1882,6 +1946,8 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 Input.init();
+Touch.init();
+layout();
 goTitle();
 requestAnimationFrame(frame);
 
