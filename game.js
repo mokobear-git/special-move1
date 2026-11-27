@@ -135,7 +135,6 @@ const Touch = {
     pad.addEventListener('pointermove', e => { if (e.pointerId === pid) { e.preventDefault(); move(e); } });
     const end = e => { if (e.pointerId !== pid) return; pid = null; knob.style.transform = ''; setDir(false, false, false, false); };
     pad.addEventListener('pointerup', end); pad.addEventListener('pointercancel', end); pad.addEventListener('lostpointercapture', end);
-    cv.addEventListener('pointerdown', () => { try { cv.focus(); } catch (_) {} if (scene && scene instanceof TitleScene) Input.pressed.start = true; });
   },
   enable() {
     if (this.on) return;
@@ -1785,12 +1784,13 @@ class FightScene {
     const p = raw.pressed;
     if (p.up || p.down) { this.pauseSel = 1 - this.pauseSel; Sound.play('select'); }
     if (p.esc) { this.paused = false; Music.setDuck(1); return; }
-    if (p.start || p.lp) {
-      Sound.play('confirm');
-      Music.setDuck(1);
-      if (this.pauseSel === 0) this.paused = false;
-      else goTitle();
-    }
+    if (p.start || p.lp) this.pauseDo(this.pauseSel);
+  }
+  pauseDo(i) {
+    Sound.play('confirm');
+    Music.setDuck(1);
+    if (i === 0) this.paused = false;
+    else goTitle();
   }
   // ---------- 描画 ----------
   draw(c) {
@@ -1909,8 +1909,13 @@ class FightScene {
   drawPause(c) {
     c.fillStyle = 'rgba(0,0,0,0.6)'; c.fillRect(0, 0, W, H);
     text(c, 'PAUSE', W / 2, 180, 56, '#fff', 'center', 6);
-    ['再開する', 'タイトルへ戻る'].forEach((s, i) => text(c, (this.pauseSel === i ? '▶ ' : '　') + s, W / 2, 270 + i * 50, 28, this.pauseSel === i ? '#ffcf3a' : '#ccc', 'center', 4));
-    text(c, '↑↓：選択　Enter/Z：決定　Esc：再開', W / 2, 420, 16, '#aaa');
+    ['再開する', 'タイトルへ戻る'].forEach((s, i) => {
+      const on = this.pauseSel === i, y = 270 + i * 64;
+      roundRect(c, W / 2 - 160, y - 24, 320, 48, 24); c.fillStyle = on ? 'rgba(255,200,60,0.25)' : 'rgba(255,255,255,0.08)'; c.fill();
+      text(c, s, W / 2, y, 28, on ? '#ffcf3a' : '#ccc', 'center', 4);
+      Hits.add(W / 2 - 160, y - 24, 320, 48, () => { if (this.paused) this.pauseDo(i); });
+    });
+    text(c, '↑↓：選択　Enter/Z：決定　Esc：再開　｜　タップでも選択可', W / 2, 430, 16, '#aaa');
   }
 }
 function projBox(p) { return { x: p.x - p.w / 2, y: p.y - p.h / 2, w: p.w, h: p.h }; }
@@ -1939,11 +1944,47 @@ function drawProj(c, p, T) {
 let scene = null;
 function setScene(s) {
   scene = s;
+  const app = document.getElementById('app');
+  if (app) app.classList.toggle('menu', !(s instanceof FightScene));
   if (s.bgm !== 'keep') Music.play(s.bgm !== undefined ? s.bgm : 'menu');
 }
 const confirmKey = p => p.start || p.lp;
 const backKey = p => p.esc || p.mp;
 function dim(c, a = 0.55) { c.fillStyle = `rgba(0,0,0,${a})`; c.fillRect(0, 0, W, H); }
+// 画面内のタップ／クリック判定（描画時に領域を登録し、次の更新で実行）
+const Hits = {
+  list: [], scene: null, tap: null,
+  add(x, y, w, h, fn) { this.list.push({ x, y, w, h, fn }); },
+  init() {
+    cv.addEventListener('pointerdown', e => {
+      try { cv.focus(); } catch (_) { /* 無視 */ }
+      const r = cv.getBoundingClientRect();
+      const x = (e.clientX - r.left) * W / r.width, y = (e.clientY - r.top) * H / r.height;
+      for (let i = this.list.length - 1; i >= 0; i--) {
+        const h = this.list[i];
+        if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) { this.tap = { fn: h.fn, scene: this.scene }; e.preventDefault(); break; }
+      }
+    });
+  },
+  run() {
+    const t = this.tap; this.tap = null;
+    if (t && t.scene === scene) t.fn();
+  }
+};
+function roundRect(c, x, y, w, h, r) { c.beginPath(); if (c.roundRect) c.roundRect(x, y, w, h, r); else c.rect(x, y, w, h); }
+function button(c, label, x, y, w, h, fn, primary) {
+  roundRect(c, x, y, w, h, h / 2);
+  c.fillStyle = primary ? 'rgba(255,200,60,0.9)' : 'rgba(0,0,0,0.55)'; c.fill();
+  c.strokeStyle = primary ? '#fff3c0' : 'rgba(255,255,255,0.6)'; c.lineWidth = 2; c.stroke();
+  text(c, label, x + w / 2, y + h / 2 + 1, Math.min(20, h * 0.45), primary ? '#2a1a00' : '#fff', 'center', 0);
+  Hits.add(x, y, w, h, fn);
+}
+function backButton(c, fn) { button(c, '◀ 戻る', 12, 10, 104, 36, () => { Sound.play('cancel'); fn(); }); }
+// 「未選択の項目をタップ→選択」「選択中の項目をタップ→決定」
+function tapSelect(obj, key, value, confirm) {
+  if (obj[key] === value) { Sound.play('confirm'); confirm(); }
+  else { obj[key] = value; Sound.play('select'); }
+}
 function footer(c, s) { c.fillStyle = 'rgba(0,0,0,0.6)'; c.fillRect(0, H - 34, W, 34); text(c, s, W / 2, H - 17, 16, '#ddd'); }
 function fakeFighter(def, x, y, facing, state, t) { return { def, x, y, facing, state, animT: t, t, mv: null, flash: 0, air: false, vy: 0 }; }
 
@@ -1960,7 +2001,8 @@ class TitleScene {
     text(c, '― 2D 対戦格闘ゲーム ―', W / 2, 215, 26, '#fff', 'center', 5);
     if (this.t % 60 < 40) text(c, Touch.on ? 'TAP TO START' : 'PRESS ENTER', W / 2, 330, 34, '#fff', 'center', 6);
     if (Touch.on) text(c, '音が出ない場合：マナーモード解除・音量を確認', W / 2, 380, 18, '#ffe9a0', 'center', 4);
-    footer(c, 'Enter / Z：決定　X / Esc：戻る　M：BGM オン／オフ　（ゲームパッド対応）');
+    footer(c, 'Enter / Z：決定　X / Esc：戻る　M：BGM オン／オフ　（タップ・クリック・ゲームパッド対応）');
+    Hits.add(0, 0, W, H, () => { Sound.init(); Sound.play('confirm'); setScene(ModeScene()); });
   }
 }
 class ListMenu {
@@ -1982,8 +2024,10 @@ class ListMenu {
       if (on) { c.strokeStyle = '#ffcf3a'; c.lineWidth = 2; c.strokeRect(W / 2 - 280, y - 30, 560, 60); }
       text(c, it.label, W / 2, y - 6, 28, on ? '#fff' : '#bbb', 'center', 4);
       if (it.desc) text(c, it.desc, W / 2, y + 18, 14, on ? '#ffe9a0' : '#888', 'center', 0, 'normal');
+      Hits.add(W / 2 - 280, y - 30, 560, 60, () => { this.sel = i; Sound.play('confirm'); this.onPick(i); });
     });
-    footer(c, '↑↓：選択　Enter / Z：決定　X / Esc：戻る');
+    if (this.onBack) backButton(c, this.onBack);
+    footer(c, '↑↓：選択　Enter / Z：決定　X / Esc：戻る　｜　タップ：項目を選んで決定');
   }
 }
 function ModeScene() {
@@ -2017,7 +2061,8 @@ class HowToScene {
     text(c, '弱→中→強の通常技は、ヒット/ガード時に強い技や必殺技へキャンセル可能（コンボ）。', W / 2, y + 56, 16, '#ddd', 'center', 3);
     text(c, 'スマホ：左の十字パッドで移動、右のボタンで攻撃（SP＝必殺技、SA＝超必殺技）。', W / 2, y + 104, 15, '#ffe9a0', 'center', 3);
     text(c, 'ジャンプ攻撃は立ちガード、足払い等の下段はしゃがみガードでのみ防御可能。必殺技はガードしても削られる。', W / 2, y + 80, 15, '#ddd', 'center', 3);
-    footer(c, 'Enter / X：戻る');
+    footer(c, 'Enter / X：戻る　｜　タップで戻る');
+    Hits.add(0, 0, W, H, () => { Sound.play('cancel'); setScene(ModeScene()); });
   }
 }
 class CharSelectScene {
@@ -2046,6 +2091,7 @@ class CharSelectScene {
       c.restore();
       text(c, d.en, x + cw / 2, y + chh - 12, 14, '#fff', 'center', 3);
       if (this.o.mark === d.id) text(c, '1P', x + 16, y + 14, 14, '#f88', 'center', 3);
+      Hits.add(x, y, cw, chh, () => tapSelect(this, 'sel', i, () => this.o.onPick(CHARS[i].id, i)));
     });
     // 詳細
     const px = 450;
@@ -2067,7 +2113,9 @@ class CharSelectScene {
     text(c, '超必殺技（V）', px + 20, yy, 18, '#ffcf3a', 'left', 3); yy += 26;
     text(c, ch.super.name, px + 24, yy, 18, '#fff', 'left', 3);
     text(c, `［${TYPE_LABEL[ch.super.type]}］`, px + 24, yy + 22, 13, '#aaa', 'left', 2, 'normal');
-    footer(c, '←→↑↓：選択　Enter / Z：決定　X / Esc：戻る');
+    button(c, 'このキャラで決定', px + 20, 426, 230, 38, () => { Sound.play('confirm'); this.o.onPick(ch.id, this.sel); }, true);
+    backButton(c, this.o.onBack);
+    footer(c, '←→↑↓：選択　Enter / Z：決定　X / Esc：戻る　｜　タップ：選択 → もう一度タップで決定');
   }
 }
 class StageSelectScene {
@@ -2082,14 +2130,17 @@ class StageSelectScene {
   draw(c) {
     drawStage(c, STAGES[this.sel].id, this.t);
     c.fillStyle = 'rgba(0,0,0,0.55)'; c.fillRect(0, 0, 360, H);
-    text(c, 'STAGE SELECT', 180, 50, 30, '#ffcf3a', 'center', 5);
+    text(c, 'STAGE SELECT', 180, 76, 30, '#ffcf3a', 'center', 5);
     STAGES.forEach((s, i) => {
-      const y = 120 + i * 66, on = i === this.sel;
+      const y = 140 + i * 66, on = i === this.sel;
       c.fillStyle = on ? 'rgba(255,200,60,0.3)' : 'rgba(255,255,255,0.06)'; c.fillRect(20, y - 26, 320, 54);
       text(c, s.name, 34, y - 6, 18, on ? '#fff' : '#aaa', 'left', 3);
       text(c, s.country, 34, y + 15, 13, on ? '#ffe9a0' : '#777', 'left', 2, 'normal');
+      Hits.add(20, y - 26, 320, 54, () => tapSelect(this, 'sel', i, () => this.o.onPick(STAGES[i].id, i)));
     });
-    footer(c, '↑↓：選択　Enter / Z：決定　X / Esc：戻る');
+    button(c, 'このステージで決定', W - 280, H - 96, 260, 46, () => { Sound.play('confirm'); this.o.onPick(STAGES[this.sel].id, this.sel); }, true);
+    backButton(c, this.o.onBack);
+    footer(c, '↑↓：選択　Enter / Z：決定　X / Esc：戻る　｜　タップ：選択 → もう一度タップで決定');
   }
 }
 const LV_NAME = ['', '入門', '初級', '初級＋', '中級', '中級＋', '上級', '達人', '鬼'];
@@ -2111,10 +2162,13 @@ class LevelScene {
       c.fillRect(x, 220 - i * 8, 80, 60 + i * 8);
       if (on) { c.strokeStyle = '#fff'; c.lineWidth = 3; c.strokeRect(x, 220 - i * 8, 80, 60 + i * 8); }
       text(c, String(i), x + 40, 300, 22, on ? '#fff' : '#999', 'center', 3);
+      Hits.add(x - 8, 140, 96, 175, () => tapSelect(this, 'lv', i, () => this.o.onPick(i)));
     }
     text(c, `Lv ${this.lv}：${LV_NAME[this.lv]}`, W / 2, 370, 34, '#fff', 'center', 5);
-    text(c, '反応速度・ガード率・対空・コンボ精度がレベルに応じて上昇', W / 2, 420, 17, '#ddd', 'center', 3);
-    footer(c, '←→：変更　Enter / Z：決定　X / Esc：戻る');
+    text(c, '反応速度・ガード率・対空・コンボ精度がレベルに応じて上昇', W / 2, 412, 17, '#ddd', 'center', 3);
+    button(c, 'このレベルで決定', W / 2 - 120, 444, 240, 44, () => { Sound.play('confirm'); this.o.onPick(this.lv); }, true);
+    backButton(c, this.o.onBack);
+    footer(c, '←→：変更　Enter / Z：決定　X / Esc：戻る　｜　タップ：選択 → もう一度タップで決定');
   }
 }
 class StoryScene {
@@ -2134,7 +2188,8 @@ class StoryScene {
       const part = ln.slice(0, Math.max(0, n - shown)); shown += ln.length;
       text(c, part, 380, 196 + i * 32, 19, '#eee', 'left', 0);
     });
-    if (this.t % 60 < 40) text(c, '▼ Enter', 900, 400, 16, '#ffe9a0', 'right');
+    if (this.t % 60 < 40) text(c, '▼ Enter / タップ', 900, 400, 16, '#ffe9a0', 'right');
+    Hits.add(0, 0, W, H, () => { if (this.t > 20) { Sound.play('confirm'); this.o.onDone(); } });
   }
 }
 class VsScene {
@@ -2153,6 +2208,7 @@ class VsScene {
     if (this.o.header) text(c, this.o.header, W / 2, 50, 30, '#fff', 'center', 5);
     if (this.o.line && this.t > 40) text(c, `「${this.o.line}」`, 720, 120, 22, '#fff', 'center', 4);
     text(c, STAGES.find(s => s.id === this.o.stage).name + (this.o.level ? `　CPU Lv${this.o.level}` : ''), W / 2, 520, 16, '#ddd', 'center', 3);
+    Hits.add(0, 0, W, H, () => { if (this.t > 30) this.o.onDone(); });
   }
 }
 class ContinueScene {
@@ -2168,7 +2224,9 @@ class ContinueScene {
     drawFighter(c, fakeFighter(CHAR[this.o.char], W / 2, 420, 1, 'lose', this.t), 1.3);
     text(c, 'CONTINUE?', W / 2, 120, 64, '#ff5040', 'center', 6);
     text(c, String(Math.max(0, this.count)), W / 2, 210, 72, '#fff', 'center', 6);
-    text(c, 'Enter / Z：コンティニュー　X / Esc：やめる', W / 2, 490, 18, '#ccc', 'center', 3);
+    button(c, 'コンティニュー', W / 2 - 240, 446, 220, 50, () => { Sound.play('confirm'); this.o.onYes(); }, true);
+    button(c, 'やめる', W / 2 + 20, 446, 220, 50, () => this.o.onNo());
+    text(c, 'Enter / Z：コンティニュー　X / Esc：やめる', W / 2, 518, 15, '#999', 'center', 0);
   }
 }
 class ResultMenu extends ListMenu {
@@ -2181,8 +2239,9 @@ class ResultMenu extends ListMenu {
       const y = 220 + i * 70, on = i === this.sel;
       c.fillStyle = on ? 'rgba(255,200,60,0.25)' : 'rgba(255,255,255,0.06)'; c.fillRect(W / 2 - 200, y - 26, 400, 52);
       text(c, it.label, W / 2, y, 26, on ? '#fff' : '#aaa', 'center', 4);
+      Hits.add(W / 2 - 200, y - 26, 400, 52, () => { this.sel = i; Sound.play('confirm'); this.onPick(i); });
     });
-    footer(c, '↑↓：選択　Enter / Z：決定');
+    footer(c, '↑↓：選択　Enter / Z：決定　｜　タップ：項目を選んで決定');
   }
 }
 
@@ -2250,7 +2309,10 @@ function arcadeNext(run) {
 class GameOverScene {
   constructor() { this.t = 0; this.bgm = null; }
   update(i) { this.t++; if (this.t > 180 || (this.t > 30 && confirmKey(i.pressed))) goTitle(); }
-  draw(c) { c.fillStyle = '#000'; c.fillRect(0, 0, W, H); text(c, 'GAME OVER', W / 2, H / 2, 72, '#ff4030', 'center', 6); }
+  draw(c) {
+    c.fillStyle = '#000'; c.fillRect(0, 0, W, H); text(c, 'GAME OVER', W / 2, H / 2, 72, '#ff4030', 'center', 6);
+    Hits.add(0, 0, W, H, () => { if (this.t > 30) goTitle(); });
+  }
 }
 
 // ============================================================
@@ -2264,9 +2326,11 @@ function frame(now) {
     while (acc >= STEP) {
       const inp = Input.poll();
       if (inp.pressed.bgm) { Sound.init(); Music.toggle(); }
+      Hits.run();
       scene.update(inp); acc -= STEP;
       if (Music.msgT > 0) Music.msgT--;
     }
+    Hits.list = []; Hits.scene = scene;
     scene.draw(ctx);
     if (Music.msgT > 0) {
       ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(W / 2 - 90, 74, 180, 34);
@@ -2277,6 +2341,7 @@ function frame(now) {
 }
 Input.init();
 Touch.init();
+Hits.init();
 layout();
 goTitle();
 requestAnimationFrame(frame);

@@ -31,12 +31,15 @@
   #app.portrait .b { width: 58px; height: 58px; }
   #app.portrait #sys { top: 10px; bottom: auto; left: 50%; transform: translateX(-50%); flex-direction: row; }
   #app.portrait #sys .b { width: auto; height: 32px; }
+  /* メニュー画面：対戦用ボタンを隠し、項目を直接タップできるようにする */
+  #app.menu #pad, #app.menu #btns, #app.menu #sys .b[data-k="start"], #app.menu #sys .b[data-k="esc"] { display: none; }
+  #app.menu:not(.portrait) #sys { left: auto; right: max(8px, env(safe-area-inset-right, 0px)); bottom: 6px; }
 </style>
 <!--/STYLE-->
 </head>
 <body>
 <!--BODY-->
-<div id="app">
+<div id="app" class="menu">
   <canvas id="game" width="960" height="540" tabindex="0"></canvas>
   <div id="touch" hidden>
     <div id="sys" class="grp">
