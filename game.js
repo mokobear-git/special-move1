@@ -65,7 +65,9 @@ const Input = {
     });
     addEventListener('keyup', e => { const a = KEYS[e.code]; if (a) { this.held[a] = false; e.preventDefault(); } });
     addEventListener('blur', () => { this.held = {}; });
-    addEventListener('pointerdown', () => Sound.init());
+    // タッチ端末では指を離した時点で初めて音声再生が許可されるため、複数のイベントで有効化する
+    for (const ev of ['pointerdown', 'pointerup', 'touchend', 'click', 'keyup']) addEventListener(ev, () => Sound.init(), { capture: true, passive: true });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && Sound.ctx) Sound.resume(); });
   },
   poll() {
     const held = Object.assign({}, this.held, this.touchHeld), pressed = Object.assign({}, this.pressed);
@@ -162,8 +164,11 @@ const BLANK = { left: false, right: false, up: false, down: false, held: {}, pre
 // ============================================================
 const Sound = {
   ctx: null, nb: null, out: null, muted: false, last: {}, log: null,
+  // ユーザー操作のたびに呼ぶ：音声の生成・再開（スマホの自動再生制限への対応）
   init() {
-    if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
+    // iPhone：マナーモード（消音スイッチ）中でも鳴らす（iOS 17 以降の Safari）
+    try { if (navigator.audioSession && navigator.audioSession.type !== 'playback') navigator.audioSession.type = 'playback'; } catch (e) { /* 非対応 */ }
+    if (this.ctx) { this.resume(); return; }
     try {
       this.ctx = new (window.AudioContext || window.webkitAudioContext)();
       this.nb = this.noiseBuffer(this.ctx);
@@ -174,7 +179,15 @@ const Sound = {
       g.connect(comp); comp.connect(this.ctx.destination);
       this.out = g;
     } catch (e) { this.ctx = null; }
-    if (this.ctx) Music.init();
+    if (this.ctx) { this.resume(); Music.init(); }
+  },
+  resume() {
+    const a = this.ctx; if (!a) return;
+    if (a.state !== 'running') { try { const p = a.resume(); if (p && p.catch) p.catch(() => {}); } catch (e) { /* 無視 */ } }
+    // 無音を1回鳴らして音声出力を確実に開始させる（iOS対策）
+    if (!this.unlocked || a.state !== 'running') {
+      try { const b = a.createBuffer(1, 1, 22050), s = a.createBufferSource(); s.buffer = b; s.connect(a.destination); s.start(0); this.unlocked = true; } catch (e) { /* 無視 */ }
+    }
   },
   noiseBuffer(a) {
     const len = Math.floor(a.sampleRate * 0.6), b = a.createBuffer(1, len, a.sampleRate), d = b.getChannelData(0);
@@ -1945,7 +1958,8 @@ class TitleScene {
     text(c, 'WORLD CLASH', 0, 0, 96, '#ffcf3a', 'center', 12);
     c.restore();
     text(c, '― 2D 対戦格闘ゲーム ―', W / 2, 215, 26, '#fff', 'center', 5);
-    if (this.t % 60 < 40) text(c, 'PRESS ENTER', W / 2, 330, 34, '#fff', 'center', 6);
+    if (this.t % 60 < 40) text(c, Touch.on ? 'TAP TO START' : 'PRESS ENTER', W / 2, 330, 34, '#fff', 'center', 6);
+    if (Touch.on) text(c, '音が出ない場合：マナーモード解除・音量を確認', W / 2, 380, 18, '#ffe9a0', 'center', 4);
     footer(c, 'Enter / Z：決定　X / Esc：戻る　M：BGM オン／オフ　（ゲームパッド対応）');
   }
 }
