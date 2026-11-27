@@ -51,7 +51,7 @@ function wrapText(c, s, maxW, size) {
 const KEYS = {
   ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down',
   KeyZ: 'lp', KeyX: 'mp', KeyC: 'hp', KeyA: 'lk', KeyS: 'mk', KeyD: 'hk',
-  Space: 'sp', KeyV: 'sa', Enter: 'start', Escape: 'esc', KeyP: 'esc', KeyH: 'dbg'
+  Space: 'sp', KeyV: 'sa', KeyM: 'bgm', Enter: 'start', Escape: 'esc', KeyP: 'esc', KeyH: 'dbg'
 };
 const BTNS = ['lp', 'mp', 'hp', 'lk', 'mk', 'hk', 'sp', 'sa'];
 const Input = {
@@ -174,6 +174,7 @@ const Sound = {
       g.connect(comp); comp.connect(this.ctx.destination);
       this.out = g;
     } catch (e) { this.ctx = null; }
+    if (this.ctx) Music.init();
   },
   noiseBuffer(a) {
     const len = Math.floor(a.sampleRate * 0.6), b = a.createBuffer(1, len, a.sampleRate), d = b.getChannelData(0);
@@ -296,6 +297,213 @@ const Sound = {
       case 'confirm': tone(500, 1000, 0.12, 'square', 0.07); break;
       case 'cancel': tone(500, 250, 0.1, 'square', 0.06); break;
       case 'round': tone(440, 440, 0.15, 'square', 0.07); tone(660, 660, 0.25, 'square', 0.07, 0.15); break;
+    }
+  }
+};
+
+// ============================================================
+//  BGM（WebAudio シーケンサー：音楽ファイル不要）
+// ============================================================
+// 楽譜表記：1小節=16分音符16個。数字=ルートからの半音数、'-'=伸ばす、'.'=休符
+const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+function parsePat(bars) {
+  const tk = bars.join(' ').trim().split(/\s+/), ev = new Array(tk.length).fill(null);
+  for (let i = 0; i < tk.length; i++) {
+    if (tk[i] === '.' || tk[i] === '-') continue;
+    let d = 1; while (tk[i + d] === '-') d++;
+    ev[i] = { n: +tk[i], d };
+  }
+  return ev;
+}
+const TRACKS_SRC = {
+  menu: { bpm: 138, parts: [
+    { inst: 'lead', root: 69, vol: 0.9, bars: ['0 - - 3 - - 7 - 5 - 3 - 2 - 3 -', '0 - - - . . -4 - -2 - 0 - 3 - 5 -', '7 - - 5 - - 2 - 3 - 5 - 7 - 10 -', '7 - - - - - . . 5 - 3 - 2 - -1 -',
+      '12 - - 10 - - 7 - 8 - 7 - 5 - 3 -', '5 - - - 3 - 0 - 3 - 5 - 7 - 8 -', '10 - - 7 - - 5 - 7 - 10 - 12 - 14 -', '12 - - - - - - - . . . . 11 - - -'] },
+    { inst: 'bass', root: 45, bars: ['0 . 0 . 12 . 0 . 0 . 0 . 12 . 7 .', '-4 . -4 . 8 . -4 . -4 . -4 . 8 . 3 .', '-2 . -2 . 10 . -2 . -2 . -2 . 10 . 5 .', '-5 . -5 . 7 . -5 . -5 . -5 . 7 . -2 .'] },
+    { inst: 'pad', root: 57, chords: [[0, 3, 7], [-4, 0, 3], [-2, 2, 5], [-5, -2, 2]] }],
+    drums: { k: 'x.......x.x.....', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.' } },
+  kyoto: { bpm: 128, parts: [
+    { inst: 'koto', root: 62, bars: ['12 - 8 - 7 - 8 - 7 - 5 - 1 - 0 -', '0 - - - 1 - 5 - 7 - - - . . . .', '7 - 8 - 12 - 8 - 7 - 5 - 7 - - -', '5 - 1 - 0 - - - - - - - . . . .',
+      '12 - 13 - 12 - 8 - 7 - 8 - 12 - - -', '17 - - - 13 - 12 - 8 - 7 - 8 - - -', '7 - 5 - 7 - 8 - 7 - 5 - 1 - 5 -', '0 - - - - - - - . . 7 . 5 . 1 .'] },
+    { inst: 'bass', root: 38, vol: 0.8, bars: ['0 . . 0 . . 0 . 0 . . 0 . . 7 .', '0 . . 0 . . 0 . 0 . . 0 . . 7 .', '-4 . . -4 . . -4 . -4 . . -4 . . 3 .', '0 . . 0 . . 0 . 0 . . 0 . 1 . . .'] },
+    { inst: 'pad', root: 50, vol: 0.7, chords: [[0, 7, 12], [0, 7, 12], [-4, 3, 8], [0, 7, 12]] }],
+    drums: { t: 'x..x..x.x..x..x.', k: 'x.......x.......', h: '....x.......x...' } },
+  bamboo: { bpm: 96, parts: [
+    { inst: 'flute', root: 69, bars: ['7 - - - - - - - 8 - 7 - 5 - - -', '1 - - - 0 - - - - - - - . . . .', '0 - 1 - 5 - - - 7 - - - 8 - - -', '12 - - - - - - - - - - - . . . .',
+      '13 - - - 12 - - - 8 - - - 7 - - -', '8 - 7 - 5 - - - 1 - - - - - - -', '5 - - - 7 - - - 1 - - - 0 - - -', '0 - - - - - - - - - - - . . . .'] },
+    { inst: 'koto', root: 45, vol: 0.6, bars: ['0 . 7 . 12 . 7 . 0 . 7 . 13 . 7 .', '-4 . 3 . 8 . 3 . -4 . 3 . 7 . 3 .'] },
+    { inst: 'pad', root: 57, vol: 0.6, chords: [[0, 7], [-4, 3]] }],
+    drums: { h: '..x...x...x...x.', k: 'x...............' } },
+  newyork: { bpm: 112, parts: [
+    { inst: 'lead', root: 64, vol: 0.8, bars: ['. . 12 . 10 . 12 . . . 7 - . . 10 .', '12 . . 15 - - 12 . 10 . 7 . . . . .', '. . 12 . 10 . 12 . . . 15 - 17 - 15 .', '12 . 10 . 7 . 5 . 7 - - - . . . .',
+      '19 - - . 17 . 15 . 17 . 15 . 12 . 10 .', '12 - - - . . 10 . 12 . . . . . . .', '19 - - . 17 . 15 . 17 . 19 . 22 - - .', '24 - - - 22 . 19 . 17 . 15 . 12 . . .'] },
+    { inst: 'slap', root: 40, bars: ['0 . . 0 12 . 0 . . 0 10 . 7 . 5 .', '3 . . 3 15 . 3 . . 3 14 . 10 . 7 .', '0 . . 0 12 . 0 . . 0 10 . 7 . 5 .', '5 . . 5 17 . 5 . 7 . . 7 19 . 7 .'] },
+    { inst: 'pad', root: 52, chords: [[0, 3, 7], [3, 7, 10], [0, 3, 7], [5, 9, 12]] }],
+    drums: { k: 'x.....x...x.....', s: '....x.......x...', h: 'x.xxx.x.x.xxx.x.' } },
+  shanghai: { bpm: 132, parts: [
+    { inst: 'erhu', root: 67, bars: ['0 - 2 - 4 - 7 - 9 - 7 - 4 - 2 -', '4 - - - 2 - 0 - -3 - - - . . . .', '7 - 9 - 12 - 9 - 7 - 4 - 7 - 9 -', '7 - - - - - - - . . . . . . . .',
+      '12 - 14 - 12 - 9 - 7 - 9 - 12 - - -', '16 - 14 - 12 - 9 - 7 - - - 4 - - -', '2 - 4 - 7 - 4 - 2 - 0 - -3 - 0 -', '0 - - - - - - - . . . . . . . .'] },
+    { inst: 'koto', root: 43, vol: 0.8, bars: ['0 . 7 . 12 . 7 . 0 . 7 . 12 . 7 .', '-3 . 4 . 9 . 4 . -3 . 4 . 9 . 4 .', '5 . 9 . 12 . 9 . 5 . 9 . 12 . 9 .', '7 . 11 . 14 . 11 . 7 . 11 . 14 . 11 .'] },
+    { inst: 'pad', root: 55, vol: 0.7, chords: [[0, 4, 7], [-3, 0, 4], [5, 9, 12], [7, 11, 14]] }],
+    drums: { k: 'x.......x.x.....', s: '....x.......x...', w: '..x...x...x...x.', g: 'x' + '.'.repeat(127) } },
+  london: { bpm: 150, parts: [
+    { inst: 'lead', root: 62, bars: ['12 - 9 - 7 - 9 - 12 - 14 - 16 - 14 -', '11 - - - 9 - 7 - 9 - - - 11 - 9 -', '7 - 9 - 11 - 12 - 14 - 12 - 11 - 9 -', '7 - - - 9 - 11 - 12 - - - - - - -',
+      '19 - - - 16 - 14 - 16 - 19 - 21 - 19 -', '16 - - - 14 - 11 - 14 - 16 - 14 - 11 -', '11 - 12 - 14 - 16 - 19 - 16 - 14 - 12 -', '12 - - - - - - - . . . . . . . .'] },
+    { inst: 'bass', root: 38, bars: ['0 . 0 . 0 . 0 . 0 . 0 . 0 . 12 .', '7 . 7 . 7 . 7 . 7 . 7 . 7 . 19 .', '9 . 9 . 9 . 9 . 9 . 9 . 9 . 21 .', '5 . 5 . 5 . 5 . 7 . 7 . 7 . 7 .'] },
+    { inst: 'pad', root: 50, chords: [[0, 4, 7], [-5, -1, 2], [-3, 0, 4], [5, 9, 12]] }],
+    drums: { k: 'x.....x.x.......', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.' } },
+  story: { bpm: 76, parts: [
+    { inst: 'flute', root: 60, vol: 1.4, bars: ['16 - - - - - - - 14 - - - 12 - - -', '12 - - - - - - - 11 - - - 9 - - -', '9 - - - 12 - - - 17 - - - 16 - - -', '14 - - - - - - - - - - - . . . .'] },
+    { inst: 'koto', root: 48, vol: 1.1, bars: ['0 . 4 . 7 . 12 . 16 . 12 . 7 . 4 .', '-3 . 0 . 4 . 9 . 12 . 9 . 4 . 0 .', '5 . 9 . 12 . 17 . 21 . 17 . 12 . 9 .', '7 . 11 . 14 . 19 . 23 . 19 . 14 . 11 .'] },
+    { inst: 'pad', root: 60, chords: [[0, 4, 7], [-3, 0, 4], [5, 9, 12], [7, 11, 14]] }] },
+  win: { bpm: 150, once: true, parts: [
+    { inst: 'brass', root: 72, bars: ['-5 . -5 . -5 . 0 - - - - - 4 - 7 -', '12 - - - - - - - - - - - . . . .'] },
+    { inst: 'bass', root: 48, bars: ['0 . 0 . 0 . 0 - - - - - 7 - - -', '0 - - - - - - - - - - - . . . .'] },
+    { inst: 'pad', root: 60, chords: [[0, 4, 7], [0, 4, 7, 12]] }],
+    drums: { k: 'x...x...x.x.x...x...............', s: '........x.x.x...x...............' } },
+  lose: { bpm: 84, once: true, parts: [
+    { inst: 'lead', root: 64, vol: 1.8, bars: ['7 - - - 6 - - - 5 - - - 4 - - -', '3 - - - - - - - - - - - . . . .'] },
+    { inst: 'pad', root: 52, vol: 1.6, chords: [[0, 3, 7], [-4, 0, 3]] }] },
+};
+const TRACKS = {};
+for (const id in TRACKS_SRC) {
+  const s = TRACKS_SRC[id], tr = { id, bpm: s.bpm, once: !!s.once, parts: [], drums: s.drums || {}, len: 0 };
+  for (const p of s.parts) {
+    const q = Object.assign({}, p);
+    if (p.bars) { q.ev = parsePat(p.bars); tr.len = Math.max(tr.len, q.ev.length); }
+    else tr.len = Math.max(tr.len, p.chords.length * 16);
+    tr.parts.push(q);
+  }
+  TRACKS[id] = tr;
+}
+const Music = {
+  bus: null, cur: null, want: null, step: 0, nextT: 0, timer: null, vol: 0.3, duck: 1, msgT: 0,
+  enabled: (() => { try { return localStorage.getItem('wc_bgm') !== 'off'; } catch (e) { return true; } })(),
+  init() {
+    const a = Sound.ctx; if (!a || this.bus) return;
+    this.bus = a.createGain(); this.bus.gain.value = this.level(); this.bus.connect(a.destination);
+    this.timer = setInterval(() => this.tick(), 25);
+    if (this.want) this.start(this.want);
+  },
+  level() { return this.enabled ? this.vol * this.duck : 0; },
+  applyLevel() { if (this.bus) this.bus.gain.setTargetAtTime(this.level(), Sound.ctx.currentTime, 0.05); },
+  play(id) {
+    if (id === this.want && !(TRACKS[id] && TRACKS[id].once)) return;
+    this.want = id;
+    if (this.bus) this.start(id);
+  },
+  start(id) {
+    this.cur = id ? TRACKS[id] : null; this.step = 0;
+    this.nextT = Sound.ctx.currentTime + 0.08;
+  },
+  setDuck(v) { this.duck = v; this.applyLevel(); },
+  toggle() {
+    this.enabled = !this.enabled; this.msgT = 90; this.applyLevel();
+    try { localStorage.setItem('wc_bgm', this.enabled ? 'on' : 'off'); } catch (e) { /* 保存できなくても続行 */ }
+  },
+  tick() {
+    const a = Sound.ctx, tr = this.cur;
+    if (!a || !tr || !this.bus || a.state !== 'running') return;
+    const sd = 60 / tr.bpm / 4;
+    if (this.nextT < a.currentTime - 0.2) this.nextT = a.currentTime + 0.05; // 復帰時の再同期
+    while (this.nextT < a.currentTime + 0.15) {
+      try { this.sched(tr, this.step, this.nextT, sd); } catch (e) { /* 無視 */ }
+      this.nextT += sd; this.step++;
+      if (this.step >= tr.len) { if (tr.once) { this.cur = null; break; } this.step = 0; }
+    }
+  },
+  sched(tr, st, t, sd) {
+    for (const p of tr.parts) {
+      if (p.ev) {
+        const e = p.ev[st % p.ev.length];
+        if (e) this.inst(p.inst, t, mtof(p.root + e.n), e.d * sd, p.vol || 1);
+      } else if (st % 16 === 0) {
+        const ch = p.chords[Math.floor(st / 16) % p.chords.length];
+        for (const n of ch) this.inst('pad', t, mtof(p.root + n), 16 * sd, (p.vol || 1) / ch.length * 3);
+      }
+    }
+    for (const k in tr.drums) { const s = tr.drums[k]; if (s[st % s.length] === 'x') this.drum(k, t); }
+  },
+  env(g, t, a, peak, hold, rel) {
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(peak, t + a);
+    g.gain.setValueAtTime(peak, t + a + hold); g.gain.exponentialRampToValueAtTime(0.0001, t + a + hold + rel);
+    return t + a + hold + rel + 0.02;
+  },
+  osc(type, f, t, end, dest, detune = 0) {
+    const o = Sound.ctx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t); o.detune.value = detune;
+    o.connect(dest); o.start(t); o.stop(end); return o;
+  },
+  vib(o, t, end, rate, depth) {
+    const a = Sound.ctx, l = a.createOscillator(), lg = a.createGain();
+    l.frequency.value = rate; lg.gain.value = depth; l.connect(lg); lg.connect(o.frequency); l.start(t); l.stop(end);
+  },
+  inst(name, t, f, dur, vol) {
+    const a = Sound.ctx, g = a.createGain(), fl = a.createBiquadFilter();
+    fl.connect(g); g.connect(this.bus);
+    let end;
+    switch (name) {
+      case 'lead':  // 矩形波リード
+        fl.type = 'lowpass'; fl.frequency.value = 2600;
+        end = this.env(g, t, 0.01, 0.07 * vol, Math.max(0, dur - 0.06), 0.06);
+        this.osc('square', f, t, end, fl); this.osc('square', f, t, end, fl, 7);
+        break;
+      case 'brass':
+        fl.type = 'lowpass'; fl.frequency.setValueAtTime(800, t); fl.frequency.linearRampToValueAtTime(3000, t + 0.08);
+        end = this.env(g, t, 0.03, 0.08 * vol, Math.max(0, dur - 0.08), 0.1);
+        this.osc('sawtooth', f, t, end, fl); this.osc('sawtooth', f, t, end, fl, 9);
+        break;
+      case 'koto':  // 撥弦（琴・琵琶風）
+        fl.type = 'lowpass'; fl.frequency.value = 3500;
+        end = this.env(g, t, 0.004, 0.13 * vol, 0, Math.min(0.9, 0.25 + dur));
+        this.osc('triangle', f, t, end, fl); this.osc('sine', f * 2, t, end, fl);
+        break;
+      case 'flute': { // 尺八・フルート風（ビブラート＋息）
+        fl.type = 'lowpass'; fl.frequency.value = 2200;
+        end = this.env(g, t, 0.07, 0.09 * vol, Math.max(0, dur - 0.1), 0.12);
+        const o = this.osc('sine', f, t, end, fl); this.vib(o, t, end, 5, f * 0.012);
+        this.osc('triangle', f * 2, t, end, fl);
+        break;
+      }
+      case 'erhu': {  // 二胡風（鋸波＋ビブラート）
+        fl.type = 'bandpass'; fl.frequency.value = f * 2.2; fl.Q.value = 0.9;
+        end = this.env(g, t, 0.05, 0.13 * vol, Math.max(0, dur - 0.08), 0.1);
+        const o = this.osc('sawtooth', f, t, end, fl); this.vib(o, t + 0.08, end, 6, f * 0.015);
+        break;
+      }
+      case 'bass':
+        fl.type = 'lowpass'; fl.frequency.value = 650;
+        end = this.env(g, t, 0.005, 0.16 * vol, Math.max(0, dur * 0.7 - 0.03), 0.05);
+        this.osc('sawtooth', f, t, end, fl); this.osc('sine', f, t, end, g);
+        break;
+      case 'slap':  // スラップベース
+        fl.type = 'lowpass'; fl.Q.value = 6; fl.frequency.setValueAtTime(2200, t); fl.frequency.exponentialRampToValueAtTime(300, t + 0.12);
+        end = this.env(g, t, 0.003, 0.17 * vol, 0, Math.max(0.12, dur));
+        this.osc('square', f, t, end, fl);
+        break;
+      case 'pad':
+        fl.type = 'lowpass'; fl.frequency.value = 1400;
+        end = this.env(g, t, 0.25, 0.022 * vol, Math.max(0, dur - 0.5), 0.3);
+        this.osc('triangle', f, t, end, fl, -6); this.osc('sawtooth', f, t, end, fl, 6);
+        break;
+    }
+  },
+  drum(k, t) {
+    const a = Sound.ctx, g = a.createGain(); g.connect(this.bus);
+    const nz = (dur, vol, ft, freq) => {
+      const s = a.createBufferSource(), f = a.createBiquadFilter(); s.buffer = Sound.nb; f.type = ft; f.frequency.value = freq;
+      s.connect(f); f.connect(g); this.env(g, t, 0.002, vol, 0, dur); s.start(t, Math.random() * 0.3); s.stop(t + dur + 0.05);
+    };
+    const tone = (f1, f2, dur, vol, type = 'sine') => {
+      const o = a.createOscillator(); o.type = type; o.frequency.setValueAtTime(f1, t); o.frequency.exponentialRampToValueAtTime(f2, t + dur);
+      o.connect(g); this.env(g, t, 0.002, vol, 0, dur); o.start(t); o.stop(t + dur + 0.05);
+    };
+    switch (k) {
+      case 'k': tone(140, 42, 0.22, 0.5); break;                       // キック
+      case 's': nz(0.14, 0.22, 'highpass', 1400); break;               // スネア
+      case 'h': nz(0.035, 0.08, 'highpass', 7500); break;              // ハイハット
+      case 't': tone(95, 55, 0.35, 0.45); break;                        // 和太鼓
+      case 'w': tone(1100, 900, 0.06, 0.12, 'triangle'); break;         // ウッドブロック
+      case 'g': tone(180, 150, 2.2, 0.18, 'triangle'); break;           // 銅鑼
     }
   }
 };
@@ -1282,7 +1490,7 @@ class FightScene {
     this.cfg = cfg;
     this.f = [new Fighter(CHAR[cfg.p1.char], 0), new Fighter(CHAR[cfg.p2.char], 1)];
     this.ctrl = [cfg.p1.cpu ? new CPU(cfg.p1.cpu) : null, cfg.p2.cpu ? new CPU(cfg.p2.cpu) : null];
-    this.stage = cfg.stage; this.round = 1; this.T = 0;
+    this.stage = cfg.stage; this.bgm = cfg.stage; this.round = 1; this.T = 0;
     this.paused = false; this.pauseSel = 0; this.showBoxes = false;
     this.result = null;
     this.startRound();
@@ -1440,7 +1648,7 @@ class FightScene {
   update(raw) {
     if (raw.pressed.dbg) this.showBoxes = !this.showBoxes;
     if (this.paused) { this.updatePause(raw); return; }
-    if (raw.pressed.esc && (this.phase === 'fight' || this.phase === 'intro')) { this.paused = true; this.pauseSel = 0; Sound.play('select'); return; }
+    if (raw.pressed.esc && (this.phase === 'fight' || this.phase === 'intro')) { this.paused = true; this.pauseSel = 0; Music.setDuck(0.35); Sound.play('select'); return; }
     this.T++; this.pt++;
     const live = this.phase === 'fight';
     const ins = [0, 1].map(i => live ? this.getInput(i, raw) : BLANK);
@@ -1521,7 +1729,11 @@ class FightScene {
         break;
       case 'roundEnd':
         if (this.pt >= 150) {
-          if (this.matchOver()) { this.phase = 'matchEnd'; this.pt = 0; }
+          if (this.matchOver()) {
+            this.phase = 'matchEnd'; this.pt = 0;
+            const human = this.ctrl[0] ? (this.ctrl[1] ? -2 : 1) : 0;
+            Music.play(this.result === human || (human === -2 && this.result >= 0) ? 'win' : 'lose');
+          }
           else { this.round++; this.startRound(); }
         }
         break;
@@ -1559,9 +1771,10 @@ class FightScene {
   updatePause(raw) {
     const p = raw.pressed;
     if (p.up || p.down) { this.pauseSel = 1 - this.pauseSel; Sound.play('select'); }
-    if (p.esc) { this.paused = false; return; }
+    if (p.esc) { this.paused = false; Music.setDuck(1); return; }
     if (p.start || p.lp) {
       Sound.play('confirm');
+      Music.setDuck(1);
       if (this.pauseSel === 0) this.paused = false;
       else goTitle();
     }
@@ -1711,7 +1924,10 @@ function drawProj(c, p, T) {
 //  メニュー系シーン
 // ============================================================
 let scene = null;
-function setScene(s) { scene = s; }
+function setScene(s) {
+  scene = s;
+  if (s.bgm !== 'keep') Music.play(s.bgm !== undefined ? s.bgm : 'menu');
+}
 const confirmKey = p => p.start || p.lp;
 const backKey = p => p.esc || p.mp;
 function dim(c, a = 0.55) { c.fillStyle = `rgba(0,0,0,${a})`; c.fillRect(0, 0, W, H); }
@@ -1730,7 +1946,7 @@ class TitleScene {
     c.restore();
     text(c, '― 2D 対戦格闘ゲーム ―', W / 2, 215, 26, '#fff', 'center', 5);
     if (this.t % 60 < 40) text(c, 'PRESS ENTER', W / 2, 330, 34, '#fff', 'center', 6);
-    footer(c, 'Enter / Z：決定　X / Esc：戻る　（ゲームパッド対応）');
+    footer(c, 'Enter / Z：決定　X / Esc：戻る　M：BGM オン／オフ　（ゲームパッド対応）');
   }
 }
 class ListMenu {
@@ -1778,9 +1994,10 @@ class HowToScene {
       ['ガード', '相手と逆方向へ入力（しゃがみガードは ↙ / ↘）'],
       ['投げ', '密着して → or ← ＋ 強P（C）'],
       ['ポーズ', 'Esc / P　　（判定表示：H）'],
+      ['BGM オン／オフ', 'M（スマホは BGM ボタン）'],
     ];
-    rows.forEach((r, i) => { text(c, r[0], 120, 110 + i * 34, 19, '#fff', 'left', 3); text(c, r[1], 520, 110 + i * 34, 19, '#ffe9a0', 'left', 3); });
-    const y = 110 + rows.length * 34 + 10;
+    rows.forEach((r, i) => { text(c, r[0], 120, 100 + i * 30, 19, '#fff', 'left', 3); text(c, r[1], 520, 100 + i * 30, 19, '#ffe9a0', 'left', 3); });
+    const y = 100 + rows.length * 30 + 10;
     text(c, '必殺技：方向キー1つ ＋ 必殺技ボタン（コマンド入力不要）', W / 2, y, 20, '#7fd8ff', 'center', 4);
     text(c, '→（またはニュートラル）＋SP／↓＋SP／←＋SP　の3種類。超必殺技は V。', W / 2, y + 28, 17, '#fff', 'center', 3);
     text(c, '弱→中→強の通常技は、ヒット/ガード時に強い技や必殺技へキャンセル可能（コンボ）。', W / 2, y + 56, 16, '#ddd', 'center', 3);
@@ -1887,7 +2104,7 @@ class LevelScene {
   }
 }
 class StoryScene {
-  constructor(o) { this.o = o; this.t = 0; }
+  constructor(o) { this.o = o; this.t = 0; this.bgm = 'story'; }
   update(i) { this.t++; if (this.t > 20 && (confirmKey(i.pressed) || backKey(i.pressed))) { Sound.play('confirm'); this.o.onDone(); } }
   draw(c) {
     const ch = CHAR[this.o.char];
@@ -1925,7 +2142,7 @@ class VsScene {
   }
 }
 class ContinueScene {
-  constructor(o) { this.o = o; this.t = 0; this.count = 10; }
+  constructor(o) { this.o = o; this.t = 0; this.count = 10; this.bgm = 'keep'; }
   update(i) {
     this.t++;
     if (this.t % 60 === 0) { this.count--; Sound.play('select'); if (this.count < 0) { this.o.onNo(); return; } }
@@ -1941,7 +2158,7 @@ class ContinueScene {
   }
 }
 class ResultMenu extends ListMenu {
-  constructor(title, items, onPick, bgStage, char, win) { super(title, items, onPick, null); this.bg = bgStage; this.char = char; this.win = win; }
+  constructor(title, items, onPick, bgStage, char, win) { super(title, items, onPick, null); this.bg = bgStage; this.char = char; this.win = win; this.bgm = 'keep'; }
   draw(c) {
     drawStage(c, this.bg, this.t); dim(c, 0.55);
     drawFighter(c, fakeFighter(CHAR[this.char], 160, GROUND, 1, this.win ? 'win' : 'lose', this.t), 1.3);
@@ -2017,7 +2234,7 @@ function arcadeNext(run) {
   }));
 }
 class GameOverScene {
-  constructor() { this.t = 0; }
+  constructor() { this.t = 0; this.bgm = null; }
   update(i) { this.t++; if (this.t > 180 || (this.t > 30 && confirmKey(i.pressed))) goTitle(); }
   draw(c) { c.fillStyle = '#000'; c.fillRect(0, 0, W, H); text(c, 'GAME OVER', W / 2, H / 2, 72, '#ff4030', 'center', 6); }
 }
@@ -2030,8 +2247,17 @@ let last = performance.now(), acc = 0;
 function frame(now) {
   acc += Math.min(100, now - last); last = now;
   try {
-    while (acc >= STEP) { scene.update(Input.poll()); acc -= STEP; }
+    while (acc >= STEP) {
+      const inp = Input.poll();
+      if (inp.pressed.bgm) { Sound.init(); Music.toggle(); }
+      scene.update(inp); acc -= STEP;
+      if (Music.msgT > 0) Music.msgT--;
+    }
     scene.draw(ctx);
+    if (Music.msgT > 0) {
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(W / 2 - 90, 74, 180, 34);
+      text(ctx, Music.enabled ? '♪ BGM ON' : '♪ BGM OFF', W / 2, 91, 18, Music.enabled ? '#ffe680' : '#aaa', 'center', 0);
+    }
   } catch (e) { console.error(e); acc = 0; }
   requestAnimationFrame(frame);
 }
@@ -2043,7 +2269,7 @@ requestAnimationFrame(frame);
 
 // テスト・デバッグ用フック
 window.__WC = {
-  Sound, CHARS, STAGES, FightScene, CPU, Fighter, setScene, goTitle,
+  Sound, Music, TRACKS, CHARS, STAGES, FightScene, CPU, Fighter, setScene, goTitle,
   get scene() { return scene; },
   step(n = 1, inp) { for (let i = 0; i < n; i++) scene.update(inp || { left: false, right: false, up: false, down: false, held: {}, pressed: {} }); },
   draw() { scene.draw(ctx); },
