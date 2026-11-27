@@ -161,52 +161,142 @@ const BLANK = { left: false, right: false, up: false, down: false, held: {}, pre
 //  サウンド（WebAudio 合成）
 // ============================================================
 const Sound = {
-  ctx: null, nb: null, muted: false,
+  ctx: null, nb: null, out: null, muted: false, last: {}, log: null,
   init() {
     if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
     try {
       this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const len = this.ctx.sampleRate * 0.5;
-      this.nb = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
-      const d = this.nb.getChannelData(0);
-      for (let i = 0; i < len; i++) d[i] = rand() * 2 - 1;
+      this.nb = this.noiseBuffer(this.ctx);
+      // 音割れ防止のコンプレッサー
+      const comp = this.ctx.createDynamicsCompressor();
+      comp.threshold.value = -14; comp.ratio.value = 6; comp.attack.value = 0.002; comp.release.value = 0.15;
+      const g = this.ctx.createGain(); g.gain.value = 0.9;
+      g.connect(comp); comp.connect(this.ctx.destination);
+      this.out = g;
     } catch (e) { this.ctx = null; }
+  },
+  noiseBuffer(a) {
+    const len = Math.floor(a.sampleRate * 0.6), b = a.createBuffer(1, len, a.sampleRate), d = b.getChannelData(0);
+    let seed = 12345;
+    for (let i = 0; i < len; i++) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; d[i] = seed / 0x3fffffff - 1; }
+    return b;
   },
   play(type) {
     const a = this.ctx; if (!a || this.muted) return;
-    try {
-      const t = a.currentTime;
-      const tone = (f1, f2, dur, wave = 'square', vol = 0.12, delay = 0) => {
-        const o = a.createOscillator(), g = a.createGain();
-        o.type = wave; o.frequency.setValueAtTime(f1, t + delay);
-        o.frequency.exponentialRampToValueAtTime(Math.max(20, f2), t + delay + dur);
-        g.gain.setValueAtTime(vol, t + delay); g.gain.exponentialRampToValueAtTime(0.001, t + delay + dur);
-        o.connect(g); g.connect(a.destination); o.start(t + delay); o.stop(t + delay + dur + 0.02);
-      };
-      const noise = (dur, vol, freq, type = 'lowpass') => {
-        const s = a.createBufferSource(), f = a.createBiquadFilter(), g = a.createGain();
-        s.buffer = this.nb; f.type = type; f.frequency.value = freq;
-        g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-        s.connect(f); f.connect(g); g.connect(a.destination); s.start(t); s.stop(t + dur + 0.02);
-      };
-      switch (type) {
-        case 'hit1': noise(0.08, 0.35, 2500); tone(220, 80, 0.08, 'square', 0.08); break;
-        case 'hit2': noise(0.12, 0.45, 1800); tone(160, 60, 0.12, 'square', 0.1); break;
-        case 'hit3': noise(0.2, 0.6, 1200); tone(120, 40, 0.2, 'sawtooth', 0.14); break;
-        case 'block': noise(0.06, 0.3, 5000, 'highpass'); tone(900, 600, 0.05, 'triangle', 0.08); break;
-        case 'whiff': noise(0.07, 0.12, 900, 'bandpass'); break;
-        case 'special': tone(300, 900, 0.18, 'sawtooth', 0.07); noise(0.15, 0.15, 1500, 'bandpass'); break;
-        case 'super': tone(150, 1200, 0.5, 'sawtooth', 0.1); tone(300, 2400, 0.5, 'square', 0.05, 0.05); break;
-        case 'ko': tone(400, 50, 0.9, 'sawtooth', 0.15); noise(0.6, 0.4, 600); break;
-        case 'throw': noise(0.25, 0.5, 400); tone(90, 40, 0.3, 'square', 0.15); break;
-        case 'counter': tone(1200, 300, 0.2, 'square', 0.1); noise(0.15, 0.4, 3000); break;
-        case 'select': tone(600, 600, 0.04, 'square', 0.05); break;
-        case 'confirm': tone(500, 1000, 0.12, 'square', 0.07); break;
-        case 'cancel': tone(500, 250, 0.1, 'square', 0.06); break;
-        case 'land': noise(0.12, 0.25, 300); break;
-        case 'round': tone(440, 440, 0.15, 'square', 0.07); tone(660, 660, 0.25, 'square', 0.07, 0.15); break;
+    if (this.log) this.log.push(type);
+    const now = a.currentTime;
+    if (this.last[type] != null && now - this.last[type] < 0.03) return; // 同一フレームの重複を抑制
+    this.last[type] = now;
+    try { this.render(type, a, this.out, this.nb, now); } catch (e) { /* 音声エラーは無視 */ }
+  },
+  // 効果音の合成（OfflineAudioContext でも同じ処理で鳴らせる）
+  render(type, a, dest, nb, t) {
+    // 種類ごとの音量バランス
+    const vol = /^sp_/.test(type) ? 2.4 : type === 'super' ? 2.6 : /Whiff/.test(type) ? 1.8 : type === 'pHit2' ? 0.85 : 1;
+    if (vol !== 1) { const vg = a.createGain(); vg.gain.value = vol; vg.connect(dest); dest = vg; }
+    const tone = (f1, f2, dur, wave = 'square', vol = 0.12, delay = 0) => {
+      const o = a.createOscillator(), g = a.createGain(), s = t + delay;
+      o.type = wave; o.frequency.setValueAtTime(f1, s);
+      o.frequency.exponentialRampToValueAtTime(Math.max(20, f2), s + dur);
+      g.gain.setValueAtTime(0.0001, s); g.gain.exponentialRampToValueAtTime(vol, s + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, s + dur);
+      o.connect(g); g.connect(dest); o.start(s); o.stop(s + dur + 0.02);
+    };
+    const noise = (dur, vol, f1, f2 = f1, ft = 'lowpass', delay = 0, q = 1, attack = 0.003) => {
+      const src = a.createBufferSource(), f = a.createBiquadFilter(), g = a.createGain(), s = t + delay;
+      src.buffer = nb; f.type = ft; f.Q.value = q;
+      f.frequency.setValueAtTime(f1, s); f.frequency.exponentialRampToValueAtTime(Math.max(30, f2), s + dur);
+      g.gain.setValueAtTime(0.0001, s); g.gain.exponentialRampToValueAtTime(vol, s + attack);
+      g.gain.exponentialRampToValueAtTime(0.0001, s + dur);
+      src.connect(f); f.connect(g); g.connect(dest); src.start(s, Math.random() * 0.2); src.stop(s + dur + 0.02);
+    };
+    const m = /^(p|k)(Whiff|Hit)([0-2])$/.exec(type);
+    if (m) {
+      const s = +m[3];
+      if (m[1] === 'p' && m[2] === 'Whiff') {        // パンチの空振り「シュッ」：高く短い風切り音
+        noise(0.05 + s * 0.03, 0.2 + s * 0.06, 4200 - s * 500, 1800, 'bandpass', 0, 2.5, 0.01);
+      } else if (m[1] === 'k' && m[2] === 'Whiff') { // キックの空振り「ブンッ」：低く長い風切り音
+        noise(0.11 + s * 0.05, 0.26 + s * 0.07, 700 + s * 80, 300, 'bandpass', 0, 1.8, 0.03);
+        tone(120, 70, 0.1 + s * 0.04, 'sine', 0.05 + s * 0.02);
+      } else if (m[1] === 'p') {                     // パンチのヒット「パシッ」：乾いた破裂音
+        tone(1500 - s * 250, 300, 0.025, 'square', 0.1 + s * 0.03);
+        noise(0.05 + s * 0.03, 0.45 + s * 0.15, 5000, 1500, 'lowpass', 0, 0.8);
+        tone(220 - s * 30, 90, 0.05 + s * 0.03, 'sine', 0.15 + s * 0.08);
+      } else {                                       // キックのヒット「ドスッ」：重く鈍い打撃音
+        tone(120 - s * 15, 40, 0.11 + s * 0.05, 'sine', 0.4 + s * 0.12);
+        noise(0.09 + s * 0.05, 0.45 + s * 0.12, 1400, 250, 'lowpass', 0, 1.2);
+        tone(70, 35, 0.12 + s * 0.04, 'triangle', 0.2);
       }
-    } catch (e) { /* 音声エラーは無視 */ }
+      return;
+    }
+    switch (type) {
+      // ---- 必殺技の発動音（技の種類ごとに異なる） ----
+      case 'sp_projectile': // 飛び道具「ハァッ…ビュン」：溜め→放出
+        tone(180, 900, 0.14, 'sine', 0.12);
+        tone(900, 160, 0.38, 'sawtooth', 0.09, 0.12);
+        noise(0.4, 0.35, 2500, 600, 'bandpass', 0.12, 3, 0.02);
+        tone(1800, 1200, 0.25, 'triangle', 0.04, 0.12);
+        break;
+      case 'sp_rising':     // 対空技「シュイーン」：上昇スイープ
+        tone(220, 1600, 0.28, 'square', 0.07);
+        noise(0.3, 0.3, 600, 4500, 'bandpass', 0, 4, 0.02);
+        tone(440, 2400, 0.22, 'triangle', 0.05, 0.03);
+        break;
+      case 'sp_rush':       // 突進技「ゴォッ」：うなる風圧
+        noise(0.34, 0.5, 300, 2200, 'lowpass', 0, 2, 0.04);
+        tone(90, 200, 0.3, 'sawtooth', 0.08);
+        break;
+      case 'sp_leap':       // 跳躍技「ヒュッ」
+        noise(0.22, 0.32, 500, 1800, 'bandpass', 0, 3, 0.02);
+        tone(300, 800, 0.16, 'triangle', 0.07);
+        break;
+      case 'sp_counter':    // カウンター構え「キィン」：金属的な残響
+        tone(1760, 1700, 0.45, 'triangle', 0.09);
+        tone(2637, 2600, 0.35, 'sine', 0.06, 0.02);
+        tone(3520, 3400, 0.2, 'sine', 0.03, 0.04);
+        break;
+      case 'sp_throw':      // 投げ技の踏み込み「グッ」
+        tone(160, 90, 0.12, 'square', 0.1);
+        noise(0.1, 0.3, 900, 300, 'lowpass');
+        break;
+      case 'super':         // 超必殺技の発動（暗転）：上昇する和音
+        tone(110, 880, 0.6, 'sawtooth', 0.08);
+        tone(165, 1320, 0.6, 'sawtooth', 0.06, 0.04);
+        tone(220, 1760, 0.6, 'square', 0.04, 0.08);
+        noise(0.7, 0.3, 300, 6000, 'bandpass', 0, 1.5, 0.2);
+        tone(1320, 1320, 0.5, 'triangle', 0.06, 0.55);
+        break;
+      // ---- 必殺技のヒット音 ----
+      case 'spHit':         // 「ドカッ」：爆発的な打撃＋きらめき
+        noise(0.28, 0.65, 3000, 300, 'lowpass', 0, 1);
+        tone(200, 45, 0.28, 'sawtooth', 0.22);
+        tone(1600, 700, 0.14, 'triangle', 0.08, 0.01);
+        break;
+      case 'saHit':         // 超必殺技のヒット「ズドン」
+        noise(0.38, 0.75, 4000, 200, 'lowpass', 0, 1);
+        tone(160, 35, 0.38, 'sawtooth', 0.26);
+        tone(880, 220, 0.25, 'square', 0.07);
+        tone(55, 30, 0.4, 'sine', 0.35);
+        break;
+      case 'slam':          // 投げの叩きつけ「ドシーン」
+        tone(85, 28, 0.45, 'sine', 0.55);
+        noise(0.4, 0.7, 700, 120, 'lowpass', 0, 1);
+        break;
+      case 'counter':       // カウンター成功
+        tone(1400, 350, 0.2, 'square', 0.1);
+        noise(0.18, 0.5, 4000, 800, 'lowpass');
+        tone(2637, 2637, 0.3, 'triangle', 0.06, 0.05);
+        break;
+      // ---- その他 ----
+      case 'block': noise(0.06, 0.35, 5000, 3000, 'highpass'); tone(900, 600, 0.05, 'triangle', 0.08); break;
+      case 'ko': tone(400, 50, 0.9, 'sawtooth', 0.15); noise(0.6, 0.5, 900, 120); break;
+      case 'throw': noise(0.12, 0.35, 1200, 400, 'bandpass', 0, 2); tone(260, 180, 0.08, 'square', 0.08); break;
+      case 'land': noise(0.12, 0.3, 400, 120); break;
+      case 'select': tone(600, 600, 0.04, 'square', 0.05); break;
+      case 'confirm': tone(500, 1000, 0.12, 'square', 0.07); break;
+      case 'cancel': tone(500, 250, 0.1, 'square', 0.06); break;
+      case 'round': tone(440, 440, 0.15, 'square', 0.07); tone(660, 660, 0.25, 'square', 0.07, 0.15); break;
+    }
   }
 };
 
@@ -228,7 +318,7 @@ function normMove(d, extra) {
   if (d.recovery == null) d.recovery = 0;
   return d;
 }
-const N = (o) => normMove(Object.assign({ type: 'normal' }, o));
+const N = (o) => normMove(Object.assign({ type: 'normal', kind: /k/.test(o.pose) ? 'kick' : 'punch' }, o));
 const NORMALS = {
   // 立ち
   sLP: N({ str: 0, pose: 'lp', startup: 3, active: 3, recovery: 7, dmg: 30, box: { x: 18, y: -146, w: 50, h: 20 }, cancel: true }),
@@ -935,7 +1025,7 @@ class Fighter {
     if (d.air) this.airAttacked = true; else this.vx = 0;
     if (d.invuln) this.invuln = Math.max(this.invuln, d.invuln);
     this.countering = false;
-    if (!d.super) Sound.play(d.special ? 'special' : 'whiff');
+    if (!d.super) Sound.play(d.special ? 'sp_' + d.type : (d.kind === 'kick' ? 'kWhiff' : 'pWhiff') + (d.str || 0));
   }
   endMove() {
     this.mv = null; this.countering = false; this.vx = 0;
@@ -1229,7 +1319,7 @@ class FightScene {
     att.gauge = Math.min(GAUGE_MAX, att.gauge + (d.super ? 0 : 10)); def.gauge = Math.min(GAUGE_MAX, def.gauge + 6);
     this.spark(def.x, GROUND - 40, '#ffd060', d.super ? 30 : 16);
     this.popText(d.super ? d.name + '！' : '', def.x, GROUND - 200, '#ffd060');
-    Sound.play('hit3');
+    Sound.play('slam');
   }
   superStart(f, d) {
     this.freeze = 45; this.freezeBy = f; this.freezeName = d.name;
@@ -1294,7 +1384,7 @@ class FightScene {
     const big = d.super || d.dmg >= 90;
     this.spark(hx, hy, d.super ? '#ffcc33' : big ? '#ffffff' : '#ffe9a0', big ? 16 : 9);
     if (big) this.shake = Math.max(this.shake, d.super ? 10 : 5);
-    Sound.play(d.super || d.str === 2 || d.special ? 'hit3' : d.str === 1 ? 'hit2' : 'hit1');
+    Sound.play(d.super ? 'saHit' : d.special ? 'spHit' : (d.kind === 'kick' ? 'kHit' : 'pHit') + (d.str || 0));
   }
   counterHit(def, att) {
     const cd = def.mv ? def.mv.d : null;
@@ -1953,7 +2043,7 @@ requestAnimationFrame(frame);
 
 // テスト・デバッグ用フック
 window.__WC = {
-  CHARS, STAGES, FightScene, CPU, Fighter, setScene, goTitle,
+  Sound, CHARS, STAGES, FightScene, CPU, Fighter, setScene, goTitle,
   get scene() { return scene; },
   step(n = 1, inp) { for (let i = 0; i < n; i++) scene.update(inp || { left: false, right: false, up: false, down: false, held: {}, pressed: {} }); },
   draw() { scene.draw(ctx); },
